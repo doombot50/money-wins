@@ -1,0 +1,70 @@
+name: Deploy moneywins site
+
+# Publishes the "Does money win?" story to GitHub Pages. On every deploy it
+# pulls the freshest la_money_wins.json from the la-campaign-finance repo (which
+# regenerates it nightly), so this repo carries only the page + a seed copy of
+# the data and never needs a manual data update.
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+  schedule:
+    # ~1010 UTC daily — after la-campaign-finance's 0900 UTC nightly rebuild.
+    - cron: '10 10 * * *'
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# Never cancel an in-flight deploy; queue the next one.
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Refresh money-wins data from la-campaign-finance
+        # Public raw URL — no token needed. If the fetch fails (e.g. a bad
+        # deploy upstream), fall back to the committed seed so the site still
+        # ships rather than breaking.
+        run: |
+          mkdir -p data
+          URL="https://raw.githubusercontent.com/doombot50/la-campaign-finance/main/la_money_wins.json"
+          if curl -fsSL "$URL" -o data/la_money_wins.json.new \
+             && python3 -c "import json,sys; json.load(open('data/la_money_wins.json.new'))"; then
+            mv data/la_money_wins.json.new data/la_money_wins.json
+            echo "Refreshed data/la_money_wins.json from upstream."
+          else
+            rm -f data/la_money_wins.json.new
+            echo "Upstream fetch failed — keeping committed seed data/la_money_wins.json."
+          fi
+
+      - name: Assemble _site
+        run: |
+          rm -rf _site && mkdir -p _site
+          cp index.html _site/
+          cp CNAME _site/ 2>/dev/null || true
+          cp .nojekyll _site/ 2>/dev/null || true
+          cp -r vendor _site/
+          cp -r data _site/
+          echo "Site contents:"; find _site -type f | sort
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: _site
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4
